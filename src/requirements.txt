@@ -6,5 +6,5 @@ langchain-chroma
 langchain-ollama
 ollama
 streamlit
-
+pyPDF2
 
