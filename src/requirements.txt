@@ -1,7 +1,10 @@
 python-dotenv
 langchain
-google-generativeai
-pyPDF2
-faiss-gpu
+langchain-community
+langchain-core
+langchain-chroma
+langchain-ollama
+ollama
 streamlit
--e .
+
+
