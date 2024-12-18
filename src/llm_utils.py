@@ -1,7 +1,8 @@
 import os
+import uuid
+import logging
 import streamlit as st
-from langchain_ollama import ChatOllama
-from langchain_ollama import OllamaEmbeddings
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.document_loaders import (WebBaseLoader, PyPDFLoader, Docx2txtLoader, TextLoader)
 from langchain_text_splitters.character import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -73,16 +74,34 @@ def doc_split_chunker(docs):
                     chunk_overlap=100
     )
     doc_chunks = text_splitter.split_documents(docs)
-    return doc_chunks
+    if "vector_db" not in st.session_state:
+        st.session_state.vector_db = setup_vectorstore(doc_chunks)
+    else:
+        st.session_state.vector_db.add_documents(doc_chunks)
 
 def setup_vectorstore(doc_chunks):
     embeddings = OllamaEmbeddings(model='nomic-embed-text')
-    vectorStore = Chroma.from_documents(doc_chunks, 
-                                         embedding=embeddings)
-    return vectorStore
-
-def prompting():
-    pass
+    vectorDB = Chroma.from_documents(
+        doc_chunks,
+        embedding=embeddings,
+        collection_name= f"{uuid.uuid4()}_{st.session_state['session_id']}"
+    )
+    # Manage the number of collections in memory, keeping only the last 20
+    MAX_COLLECTIONS = 20
+    chroma_client = vectorDB._client
+    try:
+        collection_names = sorted([collection.name for collection in chroma_client.list_collections()])
+        logging.info(f"Number of collections: {len(collection_names)}")
+        while len(collection_names) > MAX_COLLECTIONS:
+            collection_to_delete = collection_names.pop(0)
+            try:
+                chroma_client.delete_collection(collection_to_delete)
+                logging.info(f"Deleted collection: {collection_to_delete}")
+            except Exception as e:
+                logging.error(f"Failed to delete collection {collection_to_delete} : {e}")
+    except Exception as e:
+        logging.error(f"Failed to retrieve or process collections: {e}")
+    return vectorDB
     
 def create_chain(vectorStore):
     llm = ChatOllama(model='llama3.2',
@@ -98,4 +117,11 @@ def create_chain(vectorStore):
     return chain
 
 # RAG system logics
+def context_retriever_chain():
+    pass
 
+def conversational_rag_chain():
+    pass
+
+def stream_llm_response():
+    pass
