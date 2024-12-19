@@ -7,64 +7,79 @@ from langchain_community.document_loaders import (WebBaseLoader, PyPDFLoader, Do
 from langchain_text_splitters.character import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain.memory import ConversationBufferMemory
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
+from langchain.prompts import (ChatPromptTemplate, HumanMessagePromptTemplate)
 
 # Indexing phase
+DB_DOCS_LIMIT = 10
 
 def load_file_data_to_db():
-    DB_DOCS_LIMIT = 10
-    if "rag_docs" in st.session_state and st.session_state.rag_docs:
-        docs = []
-        for doc_file in st.session_state.rag_docs:
-            if doc_file.name not in st.session_state.rag_docs:
-                if len(doc_file) < DB_DOCS_LIMIT:
-                    os.makedirs("source_files", exist_ok=True)
-                    file_path = f"./source_files/{doc_file.name}"
-                    with open(file_path, 'wb') as file:
-                        file.write(doc_file.read())
-                    try:
-                        if doc_file.type == 'application/pdf':
-                            loader = PyPDFLoader(file_path=file_path)
-                        elif doc_file.name.endswith(".docx"):
-                            loader = Docx2txtLoader(file_path=file_path)
-                        elif doc_file.type in ["text/plain", "text/markdown"]:
-                            loader = TextLoader(file_path=file_path)
-                        else:
-                            st.warning(f"Document type {doc_file.type} not supported!")
-                            continue
+    TEMP_DIR = "source_files"
+    if "rag_docs" not in st.session_state or not st.session_state.rag_docs:
+        return
+    docs = []
+    st.session_state.setdefault("rag_sources", [])
 
-                        docs.extend(loader.load())
-                        st.session_state.rag_sources.append(doc_file.name)
-
-                    except Exception as e:
-                        st.toast(f"error loading document {doc_file.name} : {e}")
-                        print(f"Error loading document {doc_file.name} : {e}")
-                    finally:
-                        os.remove(file_path)
+    def save_temp_file(doc_file) -> str:
+        """Save a file temporarily and return its path"""
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        file_path = os.path.join(TEMP_DIR, doc_file.name)
+        with open(file_path, "wb") as file:
+            file.write(doc_file.read())
+        return file_path
+    
+    for doc_file in st.session_state.rag_docs:
+        # skip duplicate files
+        if doc_file.name in st.session_state.rag_sources:
+            continue
+        # check document limit
+        if len(st.session_state.rag_sources) >= DB_DOCS_LIMIT:
+            st.error(f"Maximum number of documents reached {DB_DOCS_LIMIT}")
+            break
+       
+        if doc_file.name not in st.session_state.rag_docs:
+            try:
+                file_path = save_temp_file(doc_file)
+                if doc_file.type == 'application/pdf':
+                    loader = PyPDFLoader(file_path=file_path)
+                elif doc_file.name.endswith(".docx"):
+                    loader = Docx2txtLoader(file_path=file_path)
+                elif doc_file.type in ["text/plain", "text/markdown"]:
+                    loader = TextLoader(file_path=file_path)
                 else:
-                    st.error(f"Maximum number of documents reached ({DB_DOCS_LIMIT}).")    
-            if docs:
-                doc_split_chunker(docs)
-                loaded_files = [doc_file.name for doc_file in st.session_state.rag_docs]
-                st.toast(f"Document loaded sucessfully : {', '.join(loaded_files)}.", icon="✅")
-
+                    st.warning(f"Document type {doc_file.type} not supported!")
+                    continue
+                docs.extend(loader.load())
+                st.session_state.rag_sources.append(doc_file.name)
+            except Exception as e:
+                st.toast(f"error loading document {doc_file.name} : {e}")
+                st.error(f"failed to process {doc_file.name}")
+            finally:
+                # cleanup temporary file
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+    
+        if docs:
+            doc_split_chunker(docs)
+            loaded_files = [doc_file.name for doc_file in st.session_state.rag_docs]
+            st.toast(f"Document loaded sucessfully : {', '.join(loaded_files)}.", icon="✅")
 
 def load_url_data_to_db():
-    DB_DOCS_LIMIT = 10
     if "rag_url" in st.session_state and st.session_state.rag_url:
         url = st.session_state.rag_url
         docs = []
         if url not in st.session_state.rag_sources:
-            if len(st.session_state.rag) < DB_DOCS_LIMIT:
-                try:
-                    loader = WebBaseLoader(url)
-                    docs.extend(loader.load())
-                    st.session_state.rag_sources.append(url)
-                except Exception as e:
-                    st.error(f"Error loading documents from {url}: {e}")
+            if len(st.session_state.rag) >= DB_DOCS_LIMIT:
+                st.error(f"Maximum document limit reached ({DB_DOCS_LIMIT}). Cannot load more documents.")
+            try:
+                loader = WebBaseLoader(url)
+                docs.extend(loader.load())
+                st.session_state.rag_sources.append(url)
                 if docs:
                     doc_split_chunker(docs)
                     st.toast(f"Document from URL *{url}* loaded successfully", icon='✅')
+            except Exception as e:
+                st.error(f"Error loading documents from {url}: {e}")
 
 
 def doc_split_chunker(docs):
@@ -103,7 +118,7 @@ def setup_vectorstore(doc_chunks):
         logging.error(f"Failed to retrieve or process collections: {e}")
     return vectorDB
     
-def create_chain(vectorStore):
+def conversational_rag_chain(vectorStore):
     llm = ChatOllama(model='llama3.2',
                      temperature=0)
     retriever = vectorStore.as_retriever()
@@ -120,8 +135,27 @@ def create_chain(vectorStore):
 def context_retriever_chain():
     pass
 
-def conversational_rag_chain():
-    pass
-
 def stream_llm_response():
     pass
+
+
+# prompting
+
+PROMPT_TEMPLATE_RETRIVING_S = """ 
+You are an intelligent assistant tasked with answering questions based strictly on the provided context. 
+The context comes from a database of documents or URLs and is highly relevant to the query.
+**Guidelines:**
+1. Your response must only use the provided context below.
+2. If the context does not contain enough information to answer the query, respond with: 
+    "I'm sorry, I cannot answer this question based on the provided context."
+3. Do not make assumptions or provide information that is not explicitly mentioned in the context.
+"""
+PROMPT_TEMPLATE_RETRIVING_H = """ 
+    This is the question : {question}
+
+    This is the context : {context}
+"""
+
+system_prompt =  SystemMessage(content=PROMPT_TEMPLATE_RETRIVING_S)
+human_prompt = HumanMessagePromptTemplate.from_template(template=PROMPT_TEMPLATE_RETRIVING_H)
+chat_template = ChatPromptTemplate([system_prompt, human_prompt])

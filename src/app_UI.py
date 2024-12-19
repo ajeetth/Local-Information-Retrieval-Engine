@@ -1,3 +1,4 @@
+import uuid
 import streamlit as st
 from llm_utils import (load_file_data_to_db, load_url_data_to_db)
 
@@ -9,6 +10,17 @@ st.set_page_config(
 )
 
 st.title("Local Information Retrieval Engine 🤖💬")
+
+# inital setup
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+if "rag_sources" not in st.session_state:
+    st.session_state.rag_sources = []
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 with st.sidebar:
     st.header("RAG Sources:")
@@ -27,3 +39,9 @@ with st.sidebar:
         on_change=load_url_data_to_db,
         key="rag_url"
     )
+
+user_query = st.chat_input("Ask llama")
+
+if user_query:
+    response = process_query(user_query)
+    st.write(response)
