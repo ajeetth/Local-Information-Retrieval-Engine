@@ -9,6 +9,8 @@ from langchain_chroma import Chroma
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import SystemMessage
 from langchain.prompts import (ChatPromptTemplate, HumanMessagePromptTemplate)
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser   
 
 # Indexing phase
 DB_DOCS_LIMIT = 10
@@ -58,7 +60,7 @@ def load_file_data_to_db():
                 # cleanup temporary file
                 if os.path.exists(file_path):
                     os.remove(file_path)
-    
+
         if docs:
             doc_split_chunker(docs)
             loaded_files = [doc_file.name for doc_file in st.session_state.rag_docs]
@@ -69,7 +71,7 @@ def load_url_data_to_db():
         url = st.session_state.rag_url
         docs = []
         if url not in st.session_state.rag_sources:
-            if len(st.session_state.rag) >= DB_DOCS_LIMIT:
+            if len(st.session_state.rag_sources) >= DB_DOCS_LIMIT:
                 st.error(f"Maximum document limit reached ({DB_DOCS_LIMIT}). Cannot load more documents.")
             try:
                 loader = WebBaseLoader(url)
@@ -80,7 +82,6 @@ def load_url_data_to_db():
                     st.toast(f"Document from URL *{url}* loaded successfully", icon='✅')
             except Exception as e:
                 st.error(f"Error loading documents from {url}: {e}")
-
 
 def doc_split_chunker(docs):
     text_splitter = RecursiveCharacterTextSplitter(
@@ -118,44 +119,59 @@ def setup_vectorstore(doc_chunks):
         logging.error(f"Failed to retrieve or process collections: {e}")
     return vectorDB
     
-def conversational_rag_chain(vectorStore):
-    llm = ChatOllama(model='llama3.2',
-                     temperature=0)
-    retriever = vectorStore.as_retriever()
-    memory = ConversationBufferMemory(
-        llm = llm,
-        output_key="answer",
-        memory_key="chat_history",
-        return_messages=True
-    )
-    chain = retriever | llm | memory
-    return chain
-
 # RAG system logics
-def context_retriever_chain():
-    pass
 
-def stream_llm_response():
-    pass
+def conversational_llm_rag_chain():
+    """
+    Creates a conversational Retrieval-Augmented Generation (RAG) chain.
+    Args:
+        vector_db: A vector database with a retriever method.
+    Returns:
+        rag_chain: A LangChain pipeline for conversational question answering.
+    """
+    SYSTEM_PROMPT_TEMPLATE = """ 
+        You are an intelligent assistant tasked with answering questions based strictly on the provided context. 
+    The context comes from a database of documents or URLs and is highly relevant to the query.
+    **Guidelines:**
+    1. Your response must only use the provided context.
+    2. If the context does not contain enough information to answer the query, respond with: 
+        "I'm sorry, I cannot answer this question based on the provided context."
+    3. Do not make assumptions or provide information that is not explicitly mentioned in the context.
+    """
+    HUMAN_PROMPT_TEMPLATE = """ 
+        This is the question : {question}
 
+        This is the context : {context}
+    """
+    system_prompt =  SystemMessage(content=SYSTEM_PROMPT_TEMPLATE)
+    human_prompt = HumanMessagePromptTemplate.from_template(template=HUMAN_PROMPT_TEMPLATE)
+    chat_template = ChatPromptTemplate([system_prompt, human_prompt])   
 
-# prompting
+    vector_db = st.session_state.get("vector_db")
+    if vector_db is None:
+        st.error('Vector DB not found in session state, please load documents first')
+        return None
+    
+    retriever = vector_db.as_retriever()
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    llm = ChatOllama(model='llama3.2',temperature=0)
 
-PROMPT_TEMPLATE_RETRIVING_S = """ 
-You are an intelligent assistant tasked with answering questions based strictly on the provided context. 
-The context comes from a database of documents or URLs and is highly relevant to the query.
-**Guidelines:**
-1. Your response must only use the provided context below.
-2. If the context does not contain enough information to answer the query, respond with: 
-    "I'm sorry, I cannot answer this question based on the provided context."
-3. Do not make assumptions or provide information that is not explicitly mentioned in the context.
-"""
-PROMPT_TEMPLATE_RETRIVING_H = """ 
-    This is the question : {question}
+    rag_chain = ({"context":retriever, "question": RunnablePassthrough()} 
+                 | chat_template
+                 | llm 
+                 | memory
+                 | StrOutputParser())
+    return rag_chain
 
-    This is the context : {context}
-"""
-
-system_prompt =  SystemMessage(content=PROMPT_TEMPLATE_RETRIVING_S)
-human_prompt = HumanMessagePromptTemplate.from_template(template=PROMPT_TEMPLATE_RETRIVING_H)
-chat_template = ChatPromptTemplate([system_prompt, human_prompt])
+def stream_llm_response(user_query):
+    """
+    Streams the response from the LLM RAG chain for the given question.
+    Args:
+        vector_db: The vector database object with a `as_retriever()` method.
+        question: The input question to query the LLM.
+    Returns:
+        Generator that yields the response in chunks.
+    """
+    chain = conversational_llm_rag_chain()
+    response = chain.stream({"question": user_query})
+    yield response

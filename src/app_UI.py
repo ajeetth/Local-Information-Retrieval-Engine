@@ -1,6 +1,6 @@
 import uuid
 import streamlit as st
-from llm_utils import (load_file_data_to_db, load_url_data_to_db)
+from llm_utils import (load_file_data_to_db, load_url_data_to_db, stream_llm_response)
 
 st.set_page_config(
     page_title='Retrival Engine',
@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 st.title("Local Information Retrieval Engine 🤖💬")
-
+st.header("powered by Llama3.2 🦙")
 # inital setup
 
 if "session_id" not in st.session_state:
@@ -43,5 +43,6 @@ with st.sidebar:
 user_query = st.chat_input("Ask llama")
 
 if user_query:
-    response = process_query(user_query)
-    st.write(response)
+    response = stream_llm_response(user_query)
+    for chunk in response:
+        st.write(response)
