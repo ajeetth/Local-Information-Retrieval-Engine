@@ -1,5 +1,6 @@
 import os
 import uuid
+import time
 import logging
 import streamlit as st
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -17,10 +18,13 @@ DB_DOCS_LIMIT = 10
 
 def load_file_data_to_db():
     TEMP_DIR = "source_files"
-    if "rag_docs" not in st.session_state or not st.session_state.rag_docs:
-        return
-    docs = []
     st.session_state.setdefault("rag_sources", [])
+
+    if not st.session_state.rag_docs:
+        st.warning("No documents to load. Please upload files.")
+        return
+    
+    docs = []
 
     def save_temp_file(doc_file) -> str:
         """Save a file temporarily and return its path"""
@@ -33,33 +37,35 @@ def load_file_data_to_db():
     for doc_file in st.session_state.rag_docs:
         # skip duplicate files
         if doc_file.name in st.session_state.rag_sources:
+            st.info(f"File {doc_file.name} is already processed. Skipping...")
             continue
         # check document limit
         if len(st.session_state.rag_sources) >= DB_DOCS_LIMIT:
             st.error(f"Maximum number of documents reached {DB_DOCS_LIMIT}")
             break
        
-        if doc_file.name not in st.session_state.rag_docs:
-            try:
-                file_path = save_temp_file(doc_file)
-                if doc_file.type == 'application/pdf':
-                    loader = PyPDFLoader(file_path=file_path)
-                elif doc_file.name.endswith(".docx"):
-                    loader = Docx2txtLoader(file_path=file_path)
-                elif doc_file.type in ["text/plain", "text/markdown"]:
-                    loader = TextLoader(file_path=file_path)
-                else:
-                    st.warning(f"Document type {doc_file.type} not supported!")
-                    continue
-                docs.extend(loader.load())
-                st.session_state.rag_sources.append(doc_file.name)
-            except Exception as e:
-                st.toast(f"error loading document {doc_file.name} : {e}")
-                st.error(f"failed to process {doc_file.name}")
-            finally:
+        #if doc_file.name not in st.session_state.rag_docs:
+        try:
+            file_path = save_temp_file(doc_file)
+            if doc_file.type == 'application/pdf':
+                loader = PyPDFLoader(file_path=file_path)
+            elif doc_file.name.endswith(".docx"):
+                loader = Docx2txtLoader(file_path=file_path)
+            elif doc_file.type in ["text/plain", "text/markdown"]:
+                loader = TextLoader(file_path=file_path)
+            else:
+                st.warning(f"Document type {doc_file.type} not supported!")
+                continue
+            docs.extend(loader.load())
+            st.session_state.rag_sources.append(doc_file.name)
+
+        except Exception as e:
+            st.toast(f"error loading document {doc_file.name} : {e}")
+            st.error(f"failed to process {doc_file.name}")
+        finally:
                 # cleanup temporary file
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
         if docs:
             doc_split_chunker(docs)
@@ -67,7 +73,7 @@ def load_file_data_to_db():
             st.toast(f"Document loaded sucessfully : {', '.join(loaded_files)}.", icon="✅")
 
 def load_url_data_to_db():
-    if "rag_url" in st.session_state and st.session_state.rag_url:
+    if "rag_url" not in st.session_state and st.session_state.rag_url:
         url = st.session_state.rag_url
         docs = []
         if url not in st.session_state.rag_sources:
@@ -85,13 +91,13 @@ def load_url_data_to_db():
 
 def doc_split_chunker(docs):
     text_splitter = RecursiveCharacterTextSplitter(
-                    seperator='\n',
+                    separators='.,;',
                     chunk_size=5000,
-                    chunk_overlap=100
+                    chunk_overlap=1000
     )
     doc_chunks = text_splitter.split_documents(docs)
     if "vector_db" not in st.session_state:
-        st.session_state.vector_db = setup_vectorstore(doc_chunks)
+        st.session_state.vector_db = setup_vectorstore(doc_chunks)  
     else:
         st.session_state.vector_db.add_documents(doc_chunks)
 
@@ -100,7 +106,7 @@ def setup_vectorstore(doc_chunks):
     vectorDB = Chroma.from_documents(
         doc_chunks,
         embedding=embeddings,
-        collection_name= f"{uuid.uuid4()}_{st.session_state['session_id']}"
+        collection_name=f"{str(time.time()).replace('.', '')[:14]}_" + st.session_state['session_id']
     )
     # Manage the number of collections in memory, keeping only the last 20
     MAX_COLLECTIONS = 20
@@ -153,13 +159,12 @@ def conversational_llm_rag_chain():
         return None
     
     retriever = vector_db.as_retriever()
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    #memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     llm = ChatOllama(model='llama3.2',temperature=0)
 
     rag_chain = ({"context":retriever, "question": RunnablePassthrough()} 
                  | chat_template
                  | llm 
-                 | memory
                  | StrOutputParser())
     return rag_chain
 
@@ -173,5 +178,5 @@ def stream_llm_response(user_query):
         Generator that yields the response in chunks.
     """
     chain = conversational_llm_rag_chain()
-    response = chain.stream({"question": user_query})
-    yield response
+    response = chain.invoke({"question": user_query})
+    return response
