@@ -12,12 +12,15 @@ from langchain_core.messages import SystemMessage
 from langchain.prompts import (ChatPromptTemplate, HumanMessagePromptTemplate)
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser   
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.retrieval import create_retrieval_chain
+
 
 # Indexing phase
 DB_DOCS_LIMIT = 10
 
 def load_file_data_to_db():
-    TEMP_DIR = "source_files"
+    TEMP_DIR = "embedded_files"
     st.session_state.setdefault("rag_sources", [])
 
     if not st.session_state.rag_docs:
@@ -72,28 +75,28 @@ def load_file_data_to_db():
             loaded_files = [doc_file.name for doc_file in st.session_state.rag_docs]
             st.toast(f"Document loaded sucessfully : {', '.join(loaded_files)}.", icon="✅")
 
-def load_url_data_to_db():
-    if "rag_url" not in st.session_state and st.session_state.rag_url:
-        url = st.session_state.rag_url
-        docs = []
-        if url not in st.session_state.rag_sources:
-            if len(st.session_state.rag_sources) >= DB_DOCS_LIMIT:
-                st.error(f"Maximum document limit reached ({DB_DOCS_LIMIT}). Cannot load more documents.")
-            try:
-                loader = WebBaseLoader(url)
-                docs.extend(loader.load())
-                st.session_state.rag_sources.append(url)
-                if docs:
-                    doc_split_chunker(docs)
-                    st.toast(f"Document from URL *{url}* loaded successfully", icon='✅')
-            except Exception as e:
-                st.error(f"Error loading documents from {url}: {e}")
+
+# def load_url_data_to_db(): # will be fixed in future
+#     if "rag_url" not in st.session_state and st.session_state.rag_url:
+#         url = st.session_state.rag_url
+#         docs = []
+#         if url not in st.session_state.rag_sources:
+#             if len(st.session_state.rag_sources) >= DB_DOCS_LIMIT:
+#                 st.error(f"Maximum document limit reached ({DB_DOCS_LIMIT}). Cannot load more documents.")
+#             try:
+#                 loader = WebBaseLoader(url)
+#                 docs.extend(loader.load())
+#                 st.session_state.rag_sources.append(url)
+#                 if docs:
+#                     doc_split_chunker(docs)
+#                     st.toast(f"Document from URL *{url}* loaded successfully", icon='✅')
+#             except Exception as e:
+#                 st.error(f"Error loading documents from {url}: {e}")
 
 def doc_split_chunker(docs):
     text_splitter = RecursiveCharacterTextSplitter(
-                    separators='.,;',
-                    chunk_size=5000,
-                    chunk_overlap=1000
+                    chunk_size=1000,
+                    chunk_overlap=200
     )
     doc_chunks = text_splitter.split_documents(docs)
     if "vector_db" not in st.session_state:
@@ -145,7 +148,7 @@ def conversational_llm_rag_chain():
     3. Do not make assumptions or provide information that is not explicitly mentioned in the context.
     """
     HUMAN_PROMPT_TEMPLATE = """ 
-        This is the question : {question}
+        This is the question : {input}
 
         This is the context : {context}
     """
@@ -159,14 +162,16 @@ def conversational_llm_rag_chain():
         return None
     
     retriever = vector_db.as_retriever()
-    #memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
     llm = ChatOllama(model='llama3.2',temperature=0)
 
-    rag_chain = ({"context":retriever, "question": RunnablePassthrough()} 
-                 | chat_template
-                 | llm 
-                 | StrOutputParser())
-    return rag_chain
+    combine_documents_chain = create_stuff_documents_chain(llm=llm, prompt=chat_template)
+
+    retrieval_chain = create_retrieval_chain(
+                    retriever=retriever,
+                    combine_docs_chain=combine_documents_chain
+    )
+    return retrieval_chain
 
 def stream_llm_response(user_query):
     """
@@ -178,5 +183,5 @@ def stream_llm_response(user_query):
         Generator that yields the response in chunks.
     """
     chain = conversational_llm_rag_chain()
-    response = chain.invoke({"question": user_query})
-    return response
+    response = chain.invoke({"input": user_query})
+    return response['answer']

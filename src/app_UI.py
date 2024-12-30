@@ -1,6 +1,6 @@
 import uuid
 import streamlit as st
-from llm_utils import (load_file_data_to_db, load_url_data_to_db, stream_llm_response)
+from llm_utils import (load_file_data_to_db, stream_llm_response)
 
 st.set_page_config(
     page_title='Retrival Engine',
@@ -33,16 +33,15 @@ with st.sidebar:
         key="rag_docs"
     )
     # URL input for RAG with websites
-    st.text_input(
-        "Paste a document URL 🔗",
-        placeholder='https://example.com',
-        on_change=load_url_data_to_db,
-        key="rag_url"
-    )
+    # st.text_input(
+    #     "Paste a document URL 🔗",
+    #     placeholder='https://example.com',
+    #     on_change=load_url_data_to_db,
+    #     key="rag_url"
+    # )
 
-user_query = st.chat_input("Ask llama")
+user_query = st.text_input("Ask llama")
 
 if user_query:
     response = stream_llm_response(user_query)
-    for chunk in response:
-        st.write(response)
+    st.write(response)
