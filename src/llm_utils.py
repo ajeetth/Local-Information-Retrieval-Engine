@@ -25,7 +25,7 @@ def load_file_data_to_db():
 
     if not st.session_state.rag_docs:
         st.warning("No documents to load. Please upload files.")
-        return
+        return None
     
     docs = []
 
@@ -158,7 +158,6 @@ def conversational_llm_rag_chain():
 
     vector_db = st.session_state.get("vector_db")
     if vector_db is None:
-        st.error('Vector DB not found in session state, please load documents first')
         return None
     
     retriever = vector_db.as_retriever()
@@ -177,11 +176,20 @@ def stream_llm_response(user_query):
     """
     Streams the response from the LLM RAG chain for the given question.
     Args:
-        vector_db: The vector database object with a `as_retriever()` method.
-        question: The input question to query the LLM.
+        user_query: The input question to query the LLM.
     Returns:
-        Generator that yields the response in chunks.
+        response in chunks, or a warning message.
     """
     chain = conversational_llm_rag_chain()
-    response = chain.invoke({"input": user_query})
-    return response['answer']
+    # Check if the chain is None (e.g., missing context)
+    if chain is None:
+        yield "Please upload a file to provide context before asking a question."
+        return
+    try:
+        response = chain.invoke({"input": user_query})
+        if response is None or 'answer' not in response:
+            yield "No response received from the model. Please check your inputs or context."
+            return
+        yield response['answer']
+    except Exception as e:
+        yield f"An error occurred: {str(e)}"
